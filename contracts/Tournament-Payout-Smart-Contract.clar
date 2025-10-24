@@ -12,7 +12,6 @@
 (define-constant ERR_PAYOUT_FAILED (err u10))
 
 (define-data-var next-tournament-id uint u1)
-
 (define-map tournaments uint {
     name: (string-ascii 64),
     organizer: principal,
@@ -43,6 +42,15 @@
 })
 
 (define-map tournament-balances uint uint)
+
+(define-map player-stats principal {
+    total-tournaments: uint,
+    first-place-count: uint,
+    second-place-count: uint,
+    third-place-count: uint,
+    total-winnings: uint,
+    reputation-score: uint
+})
 
 (define-public (create-tournament 
     (name (string-ascii 64))
@@ -172,6 +180,21 @@
         third-prize: third-prize
     })
     
+    (map-set participants { tournament-id: tournament-id, participant: first-place } 
+        (merge (default-to { entry-paid: true, eliminated: false, final-position: u0 } 
+            (map-get? participants { tournament-id: tournament-id, participant: first-place })) 
+            { final-position: u1 }))
+    
+    (map-set participants { tournament-id: tournament-id, participant: second-place } 
+        (merge (default-to { entry-paid: true, eliminated: false, final-position: u0 } 
+            (map-get? participants { tournament-id: tournament-id, participant: second-place })) 
+            { final-position: u2 }))
+    
+    (map-set participants { tournament-id: tournament-id, participant: third-place } 
+        (merge (default-to { entry-paid: true, eliminated: false, final-position: u0 } 
+            (map-get? participants { tournament-id: tournament-id, participant: third-place })) 
+            { final-position: u3 }))
+    
     (map-set tournaments tournament-id (merge tournament {
         winner-verified: true
     }))
@@ -190,6 +213,10 @@
     (try! (as-contract (stx-transfer? (get first-prize winners) tx-sender (get first-place winners))))
     (try! (as-contract (stx-transfer? (get second-prize winners) tx-sender (get second-place winners))))
     (try! (as-contract (stx-transfer? (get third-prize winners) tx-sender (get third-place winners))))
+    
+    (update-player-stats (get first-place winners) u1 (get first-prize winners))
+    (update-player-stats (get second-place winners) u2 (get second-prize winners))
+    (update-player-stats (get third-place winners) u3 (get third-prize winners))
     
     (map-set tournaments tournament-id (merge tournament {
         prize-distributed: true,
@@ -249,6 +276,40 @@
             (< (get current-participants tournament) (get max-participants tournament))
         )
         false
+    )
+)
+
+(define-private (update-player-stats (player principal) (position uint) (winnings uint))
+    (let (
+        (current-stats (default-to 
+            { total-tournaments: u0, first-place-count: u0, second-place-count: u0, 
+              third-place-count: u0, total-winnings: u0, reputation-score: u0 }
+            (map-get? player-stats player)))
+        (new-first (if (is-eq position u1) (+ (get first-place-count current-stats) u1) (get first-place-count current-stats)))
+        (new-second (if (is-eq position u2) (+ (get second-place-count current-stats) u1) (get second-place-count current-stats)))
+        (new-third (if (is-eq position u3) (+ (get third-place-count current-stats) u1) (get third-place-count current-stats)))
+        (position-points (if (is-eq position u1) u100 (if (is-eq position u2) u50 u25)))
+    )
+    (map-set player-stats player {
+        total-tournaments: (+ (get total-tournaments current-stats) u1),
+        first-place-count: new-first,
+        second-place-count: new-second,
+        third-place-count: new-third,
+        total-winnings: (+ (get total-winnings current-stats) winnings),
+        reputation-score: (+ (get reputation-score current-stats) position-points)
+    })
+    true
+    )
+)
+
+(define-read-only (get-player-stats (player principal))
+    (map-get? player-stats player)
+)
+
+(define-read-only (get-player-reputation (player principal))
+    (match (map-get? player-stats player)
+        stats (get reputation-score stats)
+        u0
     )
 )
 
