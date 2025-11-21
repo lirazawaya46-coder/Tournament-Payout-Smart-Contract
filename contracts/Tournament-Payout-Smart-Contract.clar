@@ -10,6 +10,8 @@
 (define-constant ERR_TOURNAMENT_NOT_ENDED (err u8))
 (define-constant ERR_INVALID_PRIZE_STRUCTURE (err u9))
 (define-constant ERR_PAYOUT_FAILED (err u10))
+(define-constant ERR_INVALID_AMOUNT (err u11))
+(define-constant ERR_SPONSORSHIP_DISABLED (err u12))
 
 (define-data-var next-tournament-id uint u1)
 (define-map tournaments uint {
@@ -50,6 +52,17 @@
     third-place-count: uint,
     total-winnings: uint,
     reputation-score: uint
+})
+
+(define-map tournament-sponsors { tournament-id: uint, sponsor: principal } {
+    amount: uint,
+    timestamp: uint
+})
+
+(define-map sponsor-stats principal {
+    total-sponsored: uint,
+    tournaments-sponsored: uint,
+    sponsor-reputation: uint
 })
 
 (define-public (create-tournament 
@@ -309,6 +322,66 @@
 (define-read-only (get-player-reputation (player principal))
     (match (map-get? player-stats player)
         stats (get reputation-score stats)
+        u0
+    )
+)
+
+(define-public (sponsor-tournament (tournament-id uint) (amount uint))
+    (let (
+        (tournament (unwrap! (map-get? tournaments tournament-id) ERR_TOURNAMENT_NOT_FOUND))
+        (tournament-balance (default-to u0 (map-get? tournament-balances tournament-id)))
+        (current-sponsor-stats (default-to 
+            { total-sponsored: u0, tournaments-sponsored: u0, sponsor-reputation: u0 }
+            (map-get? sponsor-stats tx-sender)))
+        (existing-sponsorship (map-get? tournament-sponsors { tournament-id: tournament-id, sponsor: tx-sender }))
+    )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (or 
+        (is-eq (get status tournament) "registration")
+        (is-eq (get status tournament) "active")
+    ) ERR_TOURNAMENT_ENDED)
+    
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    (match existing-sponsorship
+        prev-sponsorship
+            (map-set tournament-sponsors { tournament-id: tournament-id, sponsor: tx-sender } {
+                amount: (+ (get amount prev-sponsorship) amount),
+                timestamp: stacks-block-height
+            })
+        (begin
+            (map-set tournament-sponsors { tournament-id: tournament-id, sponsor: tx-sender } {
+                amount: amount,
+                timestamp: stacks-block-height
+            })
+            (map-set sponsor-stats tx-sender {
+                total-sponsored: (+ (get total-sponsored current-sponsor-stats) amount),
+                tournaments-sponsored: (+ (get tournaments-sponsored current-sponsor-stats) u1),
+                sponsor-reputation: (+ (get sponsor-reputation current-sponsor-stats) (/ amount u1000))
+            })
+        )
+    )
+    
+    (map-set tournaments tournament-id (merge tournament {
+        prize-pool: (+ (get prize-pool tournament) amount)
+    }))
+    
+    (map-set tournament-balances tournament-id (+ tournament-balance amount))
+    (ok true)
+    )
+)
+
+(define-read-only (get-sponsor-contribution (tournament-id uint) (sponsor principal))
+    (map-get? tournament-sponsors { tournament-id: tournament-id, sponsor: sponsor })
+)
+
+(define-read-only (get-sponsor-stats (sponsor principal))
+    (map-get? sponsor-stats sponsor)
+)
+
+(define-read-only (get-sponsor-reputation (sponsor principal))
+    (match (map-get? sponsor-stats sponsor)
+        stats (get sponsor-reputation stats)
         u0
     )
 )
